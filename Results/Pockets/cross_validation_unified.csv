@@ -1,9 +1,7 @@
-Chain,Protein,Residue,Number,Salt Bridge,MM-GBSA,MDpocket,Score,_score_val
-A,MYC,ARG,913,-,✓,SP2,2/3,2
-A,MYC,ARG,914,-,✓,SP2+SP5,2/3,2
-A,MYC,GLU,916,-,✓,SP2,2/3,2
-A,MYC,ARG,970,✓,✓,-,2/3,2
-B,MAX,ARG,239,-,✓,SP2,2/3,2
-B,MAX,GLU,248,-,✓,SP1,2/3,2
-B,MAX,ARG,254,-,✓,SP6,2/3,2
-B,MAX,GLU,275,✓,✓,-,2/3,2
+Chain,Protein,Residue,Number,Salt Bridge,ΔG (kcal/mol),MDpocket,Score,_score_val,_in_sb,_in_gb,_in_sp
+A,MYC,LEU,917,-,-2.32 ± 0.04,SP2,2/3,2,False,True,True
+A,MYC,VAL,940,-,-2.16 ± 0.06,SP3,2/3,2,False,True,True
+A,MYC,ARG,970,GLU275 (70%),-2.14 ± 0.35,-,2/3,2,True,True,False
+B,MAX,ILE,218,-,-2.10 ± 0.08,SP3,2/3,2,False,True,True
+B,MAX,ARG,254,-,-2.48 ± 0.08,SP6,2/3,2,False,True,True
+B,MAX,LYS,256,GLU957 (90%),-3.46 ± 0.11,-,2/3,2,True,True,False

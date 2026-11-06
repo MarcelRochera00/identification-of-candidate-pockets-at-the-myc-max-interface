@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 """
 Multi-Method Cross-Validation & Consensus Pipeline
 ================================================================
@@ -15,7 +16,7 @@ Pipeline Overview:
 Outputs (saved under Results/Pockets/):
     - cross_validation_unified.csv: Filtered consensus dataset.
     - 6.1_cross_validation_table.png: Rendered cross-validation summary table.
-    - visualize_cross_validation.pml: Automated PyMOL script to highlight targets.
+    - visualize_cross_validation.cxc: ChimeraX script that reproduces Figure 8.
 """
 
 import os
@@ -40,33 +41,44 @@ SP_RESIDUES_CSV = "Results/Pockets/summary/subpockets_core_residues.csv"  # sp_n
 # outside any pocket's core (defined by RESIDUE_CUTOFF in pocket identification).
 # It flags them as plausibly associated with a nearby pocket (e.g., "SP2+").
 EXTENDED_CUTOFF = 8.0
+# Off: only core lining residues count as pocket members. The static 8 A
+# COM-to-centroid rule flagged VAL953 / MET253 as "SP6+", but along the pooled
+# trajectory their mean heavy-atom distance to SP6 is > 4.7 A (MET253 within
+# 8 A of the centroid in only 28% of frames), so they are not pocket residues.
+USE_EXTENDED_CUTOFF = False
 PROTEIN_PDB     = "MYC-MAX/MYC-MAX-500/charmm-gui/gromacs/crystal_proteins.pdb"
 
 # 3. EXTERNAL DATA PATHS
 CSV_MMPBSA = "Results/Complex/mmpbsa_hotspots.csv"
 CSV_SALT   = "Results/Complex/salt_bridges.csv"
 
-# Fallback values if CSVs are missing
+# Fallback salt bridges if CSV_SALT is missing. There is deliberately no MM-GBSA
+# fallback: an outdated hotspot list would silently skew the consensus.
 SALT_BRIDGES_FALLBACK = {
     ("A", 957, "GLU"), ("B", 256, "LYS"),
     ("A", 970, "ARG"), ("B", 275, "GLU"),
 }
-MMGBSA_FALLBACK = {
-    ("A", 972, "GLU"), ("A", 916, "GLU"), ("A", 926, "ASP"), ("A", 965, "ASP"),
-    ("A", 925, "ARG"), ("A", 971, "ARG"), ("A", 970, "ARG"), ("A", 913, "ARG"),
-    ("A", 968, "ARG"), ("B", 248, "GLU"), ("B", 263, "ASP"), ("B", 265, "ASP"),
-    ("B", 244, "ASP"), ("B", 220, "ASP"), ("B", 239, "ARG"), ("B", 214, "ARG"),
-    ("B", 269, "ARG"), ("B", 279, "ARG"), ("B", 254, "ARG"), ("B", 226, "ARG"),
-}
 
-N_HOTSPOTS = 20
+# MM-GBSA hotspot criterion: a residue counts as an energetic hotspot when its
+# mean per-residue binding contribution (DELTAS/TDC, mean of 3 replicas) is
+# <= this value (kcal/mol). -2.0 is a convention by analogy with the classical
+# alanine-scanning hotspot definition (Bogan & Thorn 1998), not a standard for
+# MM-GBSA decomposition; -1.0 adds four further consensus residues.
+HOTSPOT_THRESHOLD = -2.0
 
 TABLE_COLORS = {
     "header":     "#2C3E50",
-    "2/3_MYC":    "#FADBD8",
-    "2/3_MAX":    "#D6EAF8",
-    "1/3":        "#F9F9F9",
-    "check_bg":   "#A9DFBF",
+    "text":       "#2B2B2B",
+    "muted":      "#8A8A8A",
+    "MYC":        "#FADBD8",
+    "MAX":        "#D6EAF8",
+    "check_bg":   "#C8E6C9",
+}
+
+# Pastel colour per sub-pocket for the MDpocket column of the table
+SP_COLORS = {
+    "SP1": "#A1C9F4", "SP2": "#FFB482", "SP3": "#8DE5A1",
+    "SP4": "#D0BBFF", "SP5": "#FF9F9B", "SP6": "#DEBB9B",
 }
 
 # =============================================================================
@@ -75,27 +87,38 @@ TABLE_COLORS = {
 
 def load_external_data():
     hotspots, salt_bridges = set(), set()
+    sb_partners = {}   # residue -> "PARTNER (occupancy%)"
+    energies = {}   # (chain, number, resname) -> (mean, std) over replicas, kcal/mol
     print("\n[Loading External Data]")
     if os.path.exists(CSV_MMPBSA):
         df_gb = pd.read_csv(CSV_MMPBSA)
-        top_gb = df_gb.sort_values("Energy_Mean", ascending=True).head(N_HOTSPOTS)
+        for _, row in df_gb.iterrows():
+            energies[(row["Chain"], int(row["Number"]), row["Residue"])] = (
+                row["Energy_Mean"], row["Energy_Std"])
+        top_gb = df_gb[df_gb["Energy_Mean"] <= HOTSPOT_THRESHOLD]
         for _, row in top_gb.iterrows():
             hotspots.add((row["Chain"], int(row["Number"]), row["Residue"]))
-        print(f"  \u2192 Loaded {len(hotspots)} MM-GBSA hotspots from CSV.")
+        print(f"  \u2192 Loaded {len(hotspots)} MM-GBSA hotspots from CSV "
+              f"(\u0394G <= {HOTSPOT_THRESHOLD} kcal/mol).")
     else:
-        print("  \u2192 CSV_MMPBSA not found. Using Fallback MM-GBSA data.")
-        hotspots = MMGBSA_FALLBACK
+        raise FileNotFoundError(
+            f"Missing {CSV_MMPBSA} - run section 2 of 03_myc_max_complex_analysis.py first."
+        )
 
     if os.path.exists(CSV_SALT):
         df_sb = pd.read_csv(CSV_SALT)
         for _, row in df_sb.iterrows():
-            salt_bridges.add(("A", int(row["Residue_A_Number"]), row["Residue_A_Name"]))
-            salt_bridges.add(("B", int(row["Residue_B_Number"]), row["Residue_B_Name"]))
+            res_a = ("A", int(row["Residue_A_Number"]), row["Residue_A_Name"])
+            res_b = ("B", int(row["Residue_B_Number"]), row["Residue_B_Name"])
+            occ = f"{row['Mean_Occupancy'] * 100:.0f}%"
+            salt_bridges.update((res_a, res_b))
+            sb_partners[res_a] = f"{res_b[2]}{res_b[1]} ({occ})"
+            sb_partners[res_b] = f"{res_a[2]}{res_a[1]} ({occ})"
         print(f"  \u2192 Loaded {len(salt_bridges)} Salt Bridge residues from CSV.")
     else:
         print("  \u2192 CSV_SALT not found. Using Fallback Salt Bridge data.")
         salt_bridges = SALT_BRIDGES_FALLBACK
-    return hotspots, salt_bridges
+    return hotspots, salt_bridges, energies, sb_partners
 
 
 def load_subpockets():
@@ -160,38 +183,17 @@ def get_nearest_sp(res, centroids_sp):
             best_sp, min_dist = name, dist
 
     if min_dist < EXTENDED_CUTOFF:
-        return f"{best_sp}"
+        return f"{best_sp}+"
     return None
-
-
-def build_sp_color_map(sp_names):
-    """Assign each SP a distinct color from a soft pastel palette (matches
-    seaborn's 'pastel' set), consistent with the light pink/blue already
-    used for MYC/MAX backgrounds. Cycles if there are more SPs than
-    palette entries. Used for the flat 2D matplotlib TABLE only."""
-    palette = [
-        "#A1C9F4",  # pastel blue
-        "#FFB482",  # pastel orange
-        "#8DE5A1",  # pastel green
-        "#D0BBFF",  # pastel purple
-        "#FF9F9B",  # pastel red/pink
-        "#DEBB9B",  # pastel brown
-        "#FAB0E4",  # pastel pink
-        "#B9F2F0",  # pastel cyan
-    ]
-    ordered = sorted(sp_names, key=lambda n: int(n.replace("SP", "")))
-    return {name.lower(): palette[i % len(palette)] for i, name in enumerate(ordered)}
 
 
 def main():
     print("\n" + "=" * 60 + "\n      MYC-MAX UNIFIED CROSS-VALIDATION\n" + "=" * 60)
 
-    hotspots, salt_bridges = load_external_data()
+    hotspots, salt_bridges, energies, sb_partners = load_external_data()
     sp_residues, sp_centroids = load_subpockets()
     all_sp_residues = set().union(*sp_residues.values()) if sp_residues else set()
     print("SP core residues (union across all pockets):", len(all_sp_residues))
-
-    sp_color_map = build_sp_color_map(sp_residues.keys())
 
     all_res = salt_bridges | hotspots | all_sp_residues
     rows = []
@@ -203,7 +205,7 @@ def main():
         # EXTENDED-NEIGHBORHOOD FALLBACK: if this residue isn't a core
         # member of any pocket, but sits within EXTENDED_CUTOFF of one,
         # flag it as e.g. "SP2+".
-        if not sps and sp_centroids:
+        if USE_EXTENDED_CUTOFF and not sps and sp_centroids:
             nearest = get_nearest_sp(res, sp_centroids)
             if nearest:
                 sps = [nearest]
@@ -212,13 +214,16 @@ def main():
             continue
 
         score = sum([in_sb, in_gb, len(sps) > 0])
+        dg = energies.get(res)
 
         rows.append({
             "Chain": res[0], "Protein": "MYC" if res[0] == "A" else "MAX",
             "Residue": res[2], "Number": res[1],
-            "Salt Bridge": "\u2713" if in_sb else "-", "MM-GBSA": "\u2713" if in_gb else "-",
+            "Salt Bridge": sb_partners.get(res, "\u2713") if in_sb else "-",
+            "\u0394G (kcal/mol)": f"{dg[0]:.2f} \u00b1 {dg[1]:.2f}" if dg else "-",
             "MDpocket": "+".join(sps) if sps else "-",
             "Score": f"{score}/3", "_score_val": score,
+            "_in_sb": in_sb, "_in_gb": in_gb, "_in_sp": bool(sps),
         })
 
     df = pd.DataFrame(rows)
@@ -230,93 +235,115 @@ def main():
 
     out_csv = os.path.join(OUTPUT_DIR, "cross_validation_unified.csv")
     df_filtered.to_csv(out_csv, index=False)
-    plot_consensus_table(df_filtered, sp_color_map, os.path.join(OUTPUT_DIR, "6.1_cross_validation_table.png"))
-    write_pymol_script(df_filtered, os.path.join(OUTPUT_DIR, "visualize_cross_validation.pml"))
+    plot_consensus_table(df_filtered, os.path.join(OUTPUT_DIR, "6.1_cross_validation_table.png"))
+    write_chimerax_script(df_filtered, os.path.join(OUTPUT_DIR, "visualize_cross_validation.cxc"))
 
     print(f"\n[\u2713] Finished. {len(df_filtered)} high-confidence residues identified.")
     print(f"    Results saved in {OUTPUT_DIR}/")
 
 
-def plot_consensus_table(df, sp_color_map, output_path):
-    display_df = df.drop(columns=["_score_val", "Chain"])
-    cols = display_df.columns.tolist()
-    fig, ax = plt.subplots(figsize=(10, max(8, len(df) * 0.4)))
+def plot_consensus_table(df, output_path):
+    """Render the three-method consensus table (Table 3).
+
+    Rows are tinted by protein (MYC / MAX). A method cell turns green with a
+    check mark when the residue meets that method's criterion; the MDpocket
+    cell takes the colour of its sub-pocket. The MM-GBSA column always shows
+    mean +/- SD over replicas so the margin to the threshold is visible.
+    """
+    c = TABLE_COLORS
+    minus = lambda t: t.replace("-", "\u2212")
+    cols = ["Protein", "Residue", "Salt Bridge",
+            f"MM-GBSA \u0394G\n(kcal/mol)", "MDpocket", "Score"]
+    cells, met = [], []
+    for _, row in df.iterrows():
+        cells.append([
+            row["Protein"], f"{row['Residue']}{row['Number']}",
+            f"\u2713  {row['Salt Bridge']}" if row["_in_sb"] else "\u2013",
+            minus(row["\u0394G (kcal/mol)"]),
+            row["MDpocket"] if row["_in_sp"] else "\u2013",
+            row["Score"],
+        ])
+        met.append([False, False, row["_in_sb"], row["_in_gb"], row["_in_sp"], False])
+
+    fig, ax = plt.subplots(figsize=(11, 0.55 * (len(df) + 1) + 0.6))
     ax.axis("off")
-    table = ax.table(cellText=display_df.values.tolist(), colLabels=cols, loc="center", cellLoc="center")
+    table = ax.table(cellText=cells, colLabels=cols, loc="center", cellLoc="center",
+                     colWidths=[0.11, 0.13, 0.22, 0.22, 0.16, 0.10])
     table.auto_set_font_size(False)
-    table.set_fontsize(11)
-    table.scale(1.2, 2.0)
+    table.set_fontsize(12)
+    table.scale(1.0, 2.6)
+
     for j in range(len(cols)):
-        table[0, j].set_facecolor(TABLE_COLORS["header"])
-        table[0, j].set_text_props(color="white", fontweight="bold", fontsize=12)
+        head = table[0, j]
+        head.set_facecolor(c["header"])
+        head.set_edgecolor("grey")
+        head.set_text_props(color="white", fontweight="bold")
+        head.set_height(head.get_height() * 1.3)
+
     for i, (_, row) in enumerate(df.iterrows()):
-        base = TABLE_COLORS["2/3_MYC"] if row["Protein"] == "MYC" else TABLE_COLORS["2/3_MAX"]
-        for j, col in enumerate(cols):
+        for j in range(len(cols)):
             cell = table[i + 1, j]
-            cell.set_facecolor(base)
-            if str(row[col]) == "\u2713":
-                cell.set_facecolor(TABLE_COLORS["check_bg"])
-                cell.set_text_props(fontweight="bold")
-            if col == "MDpocket" and "SP" in str(row[col]):
-                sp_key = str(row[col]).replace("+", "").split("+")[0].lower()
-                cell.set_facecolor(sp_color_map.get(sp_key, base))
-                cell.set_text_props(fontweight="bold", color=TABLE_COLORS["header"])
-
-
-    legend_elements = [
-        mpatches.Patch(facecolor=TABLE_COLORS["2/3_MYC"], label="Score >= 2 (MYC)"),
-        mpatches.Patch(facecolor=TABLE_COLORS["2/3_MAX"], label="Score >= 2 (MAX)"),
-        mpatches.Patch(facecolor=TABLE_COLORS["check_bg"], label="Method Detected (\u2713)"),
-    ]
-    for sp_key, color in sorted(sp_color_map.items()):
-        legend_elements.append(mpatches.Patch(facecolor=color, label=f"MDpocket {sp_key.upper()}"))
-
-    ax.legend(handles=legend_elements, loc="lower center", bbox_to_anchor=(0.5, -0.10),
-              ncol=3, fontsize=10, frameon=True)
+            cell.set_edgecolor("grey")
+            cell.set_linewidth(1.5)
+            cell.set_facecolor(c[row["Protein"]])
+            cell.set_text_props(color=c["text"])
+            if met[i][j]:
+                cell.set_facecolor(c["check_bg"])
+            elif cells[i][j] == "\u2013":
+                cell.set_text_props(color=c["muted"])
+            if j == 4 and met[i][j]:
+                cell.set_facecolor(SP_COLORS.get(row["MDpocket"], c["check_bg"]))
+            if j == 1:
+                cell.set_text_props(fontweight="normal", color=c["text"])
 
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
 
 
-SHOW_LABELS = False     # set False to skip labels entirely - add them yourself
+# --- Figure 8 (ChimeraX) -----------------------------------------------------
+FIGURE_PDB    = "crystal_proteins.pdb"   # same structure used for the original render
+FIGURE_COLORS = {"A": "#ed8282", "B": "#99c1f1", "flagged": "red"}  # MYC, MAX, consensus
+FIGURE_PNG    = "Results/Pockets/final_residues.png"
+SHOW_LABELS   = False   # set False to skip labels entirely - add them yourself
                         # later in an image editor, on the rendered PNG
-LABEL_OFFSET = (2.0, 2.0, 2.0)   # Angstrom - nudges labels away from the atom
+LABEL_OFFSET  = (2.0, 2.0, 2.0)  # Angstrom - nudges labels away from the atom
                                    # they're attached to, so they don't sit
                                    # directly on top of overlapping sticks
 
 
-def write_pymol_script(df, pml_path):
-    def get_sel(sub_df):
-        return " or ".join(f"(chain {r['Chain']} and resi {r['Number']})" for _, r in sub_df.iterrows()) or "none"
+def write_chimerax_script(df, cxc_path):
+    """ChimeraX script reproducing Figure 8: MYC / MAX cartoons in light red /
+    light blue, consensus (score >= 2) residues as red sticks."""
+    by_chain = {}
+    for _, r in df.iterrows():
+        by_chain.setdefault(r["Chain"], []).append(str(r["Number"]))
+    flagged = " | ".join(f"/{ch}:{','.join(nums)}" for ch, nums in sorted(by_chain.items())) or "none"
 
-    with open(pml_path, "w") as f:
-        f.write(f"load {os.path.abspath(PROTEIN_PDB)}, prot\n")
-        f.write("hide everything, prot\nshow cartoon, prot\n")
-        f.write("color salmon, prot and chain A\n")
-        f.write("color palecyan, prot and chain B\n")
-        f.write("set cartoon_transparency, 0\n")
+    with open(cxc_path, "w") as f:
+        f.write(f"open {os.path.abspath(FIGURE_PDB)}\n")
+        f.write("set bgColor white\n")
+        f.write(f"color /A {FIGURE_COLORS['A']}\n")
+        f.write(f"color /B {FIGURE_COLORS['B']}\n")
 
         f.write("\n# --- Cross-validated (score >= 2) residues, in red ---\n")
-        f.write(f"select flagged, {get_sel(df)}\n")
-        f.write("show sticks, flagged and not name C+N+O\n")
-        f.write("color red, flagged\n")
+        f.write(f"name flagged {flagged}\n")
+        f.write("show flagged atoms\n")
+        f.write("style flagged stick\n")
+        f.write(f"color flagged {FIGURE_COLORS['flagged']}\n")
 
         if SHOW_LABELS:
             ox, oy, oz = LABEL_OFFSET
-            f.write(f"set label_position, ({ox}, {oy}, {oz})\n")
-            f.write("set label_size, 16\nset label_color, black\n")
-            f.write("set label_outline_color, white\nset label_font_id, 7\n")
-            f.write("label flagged and name CA, '%s%s' % (resn, resi)\n")
-            f.write("# still overlapping in the rendered view? in PyMOL you can drag\n"
-                    "# individual labels by hand: wizard label_wizard, then click-drag\n"
-                    "# any label to reposition it manually before exporting the image.\n")
+            f.write(f"label flagged residues text {{0.name}}{{0.number}} height 1.5 "
+                    f"color black offset {ox},{oy},{oz}\n")
         else:
             f.write("# labels skipped (SHOW_LABELS = False) - add them manually in an\n"
                     "# image editor afterward, using cross_validation_unified.csv as\n"
                     "# the reference for which residue is which.\n")
 
-        f.write("\nzoom flagged\n")
-        f.write("bg_color white\nset ray_shadows, 0\n")
+        f.write("\nview\n")
+        f.write("# rotate to the figure orientation, then:\n")
+        f.write(f"# save {os.path.abspath(FIGURE_PNG)} width 3000 height 2400 "
+                f"supersample 3 transparentBackground false\n")
 
 
 if __name__ == "__main__":

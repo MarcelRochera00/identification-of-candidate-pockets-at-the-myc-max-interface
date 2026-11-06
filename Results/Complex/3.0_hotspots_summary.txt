@@ -1,26 +1,43 @@
 Consensus MM-GBSA Hotspot Residues — MYC-MAX
-Replicas: 3 | Top 20 by mean contribution
+Replicas: 3 | 29 residues with mean ΔG <= -2.0 kcal/mol (of 104 present in all replicas)
 Settings: igb=2, idecomp=1, interval=50
 ============================================================
 Residue                      Mean (kcal/mol)        Std    Protein
 ------------------------------------------------------------
-L:B:ARG:254                          -109.50       0.10        MAX
-R:A:ARG:970                          -109.49       0.15        MYC
-R:A:ARG:925                          -109.46       0.14        MYC
-R:A:ARG:968                          -109.41       0.10        MYC
-R:A:ARG:913                          -109.38       0.18        MYC
-L:B:ARG:279                          -108.92       0.14        MAX
-R:A:ARG:971                          -108.83       0.10        MYC
-R:A:ARG:919                          -108.18       0.10        MYC
-R:A:ARG:914                          -108.10       0.01        MYC
-L:B:ARG:239                          -107.22       0.03        MAX
-R:A:ASP:965                           -42.39       0.06        MYC
-L:B:ASP:265                           -42.29       0.06        MAX
-L:B:ASP:244                           -42.20       0.10        MAX
-L:B:ASP:263                           -41.85       0.06        MAX
-R:A:ASP:926                           -41.32       0.04        MYC
-R:A:GLU:916                           -34.74       0.17        MYC
-R:A:GLU:972                           -34.63       0.05        MYC
-L:B:GLU:248                           -34.51       0.10        MAX
-L:B:GLU:275                           -34.31       0.07        MAX
-R:A:GLU:963                           -33.76       0.16        MYC
+R:A:LEU:967                            -4.00       0.08        MYC
+R:A:ILE:950                            -3.86       0.02        MYC
+L:B:ILE:250                            -3.85       0.03        MAX
+R:A:LEU:974                            -3.74       0.01        MYC
+L:B:LEU:243                            -3.71       0.01        MAX
+L:B:LEU:267                            -3.68       0.04        MAX
+R:A:LEU:943                            -3.67       0.03        MYC
+R:A:LEU:960                            -3.53       0.07        MYC
+L:B:LEU:274                            -3.47       0.02        MAX
+L:B:LYS:256                            -3.46       0.11        MAX
+R:A:VAL:953                            -3.26       0.07        MYC
+L:B:MET:253                            -3.14       0.01        MAX
+L:B:VAL:278                            -3.08       0.02        MAX
+R:A:LEU:924                            -3.05       0.02        MYC
+L:B:LEU:225                            -3.05       0.04        MAX
+R:A:LEU:981                            -2.93       0.08        MYC
+L:B:ILE:264                            -2.85       0.02        MAX
+R:A:LEU:978                            -2.67       0.02        MYC
+R:A:GLN:927                            -2.57       0.07        MYC
+L:B:LEU:281                            -2.50       0.10        MAX
+L:B:ARG:254                            -2.48       0.08        MAX
+R:A:LEU:917                            -2.32       0.04        MYC
+R:A:ARG:971                            -2.29       0.15        MYC
+R:A:LYS:977                            -2.23       0.19        MYC
+R:A:VAL:940                            -2.16       0.06        MYC
+R:A:ARG:970                            -2.14       0.35        MYC
+L:B:ILE:218                            -2.10       0.08        MAX
+R:A:GLN:954                            -2.09       0.17        MYC
+L:B:ASN:271                            -2.03       0.11        MAX
+
+========================================================================
+Energy term decomposition (kcal/mol, summed over residues,
+each residue averaged over frames and then over replicas)
+------------------------------------------------------------------------
+Group                           n      vdW     Elec    Polar   NonPol    TOTAL
+Hotspots (<= -2.0)             29    -84.9    -84.1     98.6    -15.5    -85.9
+All consensus residues        104   -146.7     35.7     28.2    -24.5   -107.2

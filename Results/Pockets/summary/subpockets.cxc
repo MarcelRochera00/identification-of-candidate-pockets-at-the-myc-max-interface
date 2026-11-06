@@ -2,13 +2,19 @@
 #   chimerax --script subpockets.cxc
 # or drag-and-drop this file onto a running ChimeraX window.
 
-open /home/marcel/Desktop/Project1/MYC-MAX/MYC-MAX-500/charmm-gui/gromacs/crystal_proteins.pdb
+open MYC-MAX/MYC-MAX-500/charmm-gui/gromacs/crystal_proteins.pdb
 style #1 stick
 set bgColor white
 
 # --- Chains: warm vs. cool colors so the two main chains are easy to tell apart ---
 color #1/A salmon
 color #1/B paleturquoise
+
+# --- Chain labels placed directly on the structure (no legend entry needed) ---
+marker #2 position 46.51,62.25,60.75 radius 0.01 color salmon
+label #2 text "Chain A" height 2.0 color black
+marker #3 position 44.94,65.30,59.96 radius 0.01 color paleturquoise
+label #3 text "Chain B" height 2.0 color black
 
 # --- Sub-pockets (top 6 by volume), shown as colored sticks. See subpockets_legend.png for the pocket color key. ---
 
@@ -18,6 +24,8 @@ color sel red
 show sel atoms
 style sel stick
 ~select
+marker #4 position 55.31,66.57,61.84 radius 0.01 color red
+label #4 text "SP1" height 2.2 color red
 
 # SP2 (pocket 6, 89 A^3, mean freq 0.62, 6 residues)
 select #1/B:238,239,240 #1/A:913,914,917
@@ -25,6 +33,8 @@ color sel green
 show sel atoms
 style sel stick
 ~select
+marker #5 position 58.89,51.20,47.91 radius 0.01 color green
+label #5 text "SP2" height 2.2 color green
 
 # SP3 (pocket 3, 45 A^3, mean freq 0.54, 5 residues)
 select #1/B:214,218 #1/A:938,939,940
@@ -32,6 +42,8 @@ color sel blue
 show sel atoms
 style sel stick
 ~select
+marker #6 position 42.88,49.13,43.56 radius 0.01 color blue
+label #6 text "SP3" height 2.2 color blue
 
 # SP4 (pocket 1, 26 A^3, mean freq 0.54, 3 residues)
 select #1/A:945,948,949
@@ -39,6 +51,8 @@ color sel yellow
 show sel atoms
 style sel stick
 ~select
+marker #7 position 36.77,61.01,57.97 radius 0.01 color yellow
+label #7 text "SP4" height 2.2 color yellow
 
 # SP5 (pocket 4, 21 A^3, mean freq 0.52, 2 residues)
 select #1/A:914,918
@@ -46,6 +60,8 @@ color sel magenta
 show sel atoms
 style sel stick
 ~select
+marker #8 position 50.86,49.09,46.87 radius 0.01 color magenta
+label #8 text "SP5" height 2.2 color magenta
 
 # SP6 (pocket 2, 18 A^3, mean freq 0.53, 3 residues)
 select #1/B:254,257,258
@@ -53,6 +69,8 @@ color sel cyan
 show sel atoms
 style sel stick
 ~select
+marker #9 position 40.43,64.70,68.60 radius 0.01 color cyan
+label #9 text "SP6" height 2.2 color cyan
 
 view
 

@@ -89,8 +89,15 @@ OUT          = os.path.join(PROJECT_ROOT, "Results/Complex")
 BASE_PATH    = os.path.join(PROJECT_ROOT, "MYC-MAX")
 INDEX_FILE   = os.path.abspath(os.path.join(BASE_PATH, "MYC-MAX-1000/charmm-gui/gromacs/index-new.ndx"))
 
-# Number of top hotspot residues to show in the decomposition plots
-TOP_N_HOTSPOTS = 20
+# Hotspot criterion for the decomposition plots and summary: residues whose
+# per-residue binding contribution is <= this value (kcal/mol). Keep in sync
+# with HOTSPOT_THRESHOLD in 06_multi_method_validation.py.
+HOTSPOT_THRESHOLD = -2.0
+
+# Skip the (multi-hour) gmx_MMPBSA run for a replica when its
+# FINAL_RESULTS_MMPBSA.csv and DECOMP_RESULTS.csv already exist, and only
+# re-parse / re-plot them. Set to False to force recomputation.
+REUSE_EXISTING_MMPBSA = True
 
 # Salt bridge parameters
 SALT_DIST      = 4.0   # Å — standard geometric cutoff for salt bridges
@@ -145,32 +152,45 @@ def parse_mmpbsa_csv(csv_file):
     return np.array(deltas)
 
 
-def parse_decomp_csv(csv_file):
+# Energy terms of the decomposition, in the column order written by gmx_MMPBSA.
+DECOMP_TERMS = ["Internal", "vdW", "Electrostatic", "Polar", "NonPolar", "TOTAL"]
+
+
+def parse_decomp_terms(csv_file):
     """
-    Parse gmx_MMPBSA decomposition CSV.
+    Parse gmx_MMPBSA decomposition CSV, keeping every energy term.
     Format: Frame #,Residue,Internal,van der Waals,Electrostatic,Polar Solvation,Non-Polar Solv.,TOTAL
     Residue label format: R:A:ARG:913 — chain A = MYC, chain B = MAX.
-    Averages TOTAL across all frames per residue.
+
+    The file holds 12 tables with identical headers: Complex / Receptor /
+    Ligand / DELTAS, each split into Total / Sidechain / Backbone
+    contributions. Only DELTAS → Total Decomposition Contribution (TDC) is
+    the per-residue contribution to binding, so every other table is skipped.
+
+    Returns {residue: array of the six DECOMP_TERMS, averaged over frames}.
     """
-    residue_totals = {}
-    in_tdc = False
+    residue_terms = {}
+    block = None   # "Complex" | "Receptor" | "Ligand" | "DELTAS"
+    sub   = None   # "Total" | "Sidechain" | "Backbone"
 
     with open(csv_file) as f:
         for line in f:
             line = line.strip().strip('"')
-            if not line:
+            if not line or line.startswith("Frame #,Residue"):
                 continue
-            if line.startswith("Frame #,Residue"):
-                in_tdc = True
+            if not line[0].isdigit():
+                # Block / sub-block title line
+                if line.endswith(":"):
+                    block = line[:-1]
+                    sub = None
+                elif "Contribution" in line:
+                    sub = line.split()[0]
                 continue
-            if in_tdc and (not line[0].isdigit()):
-                in_tdc = False
-                continue
-            if not in_tdc:
+            if block != "DELTAS" or sub != "Total":
                 continue
 
             parts = line.split(",")
-            if len(parts) < 7:
+            if len(parts) < 8:
                 continue
 
             try:
@@ -180,15 +200,18 @@ def parse_decomp_csv(csv_file):
 
             res_raw = parts[1].strip()
             try:
-                total = float(parts[-1])
+                terms = [float(x) for x in parts[2:8]]
             except (ValueError, IndexError):
                 continue
 
-            if res_raw not in residue_totals:
-                residue_totals[res_raw] = []
-            residue_totals[res_raw].append(total)
+            residue_terms.setdefault(res_raw, []).append(terms)
 
-    return {k: np.mean(v) for k, v in residue_totals.items()}
+    return {k: np.mean(v, axis=0) for k, v in residue_terms.items()}
+
+
+def parse_decomp_csv(csv_file):
+    """Mean per-residue TOTAL contribution to binding (kcal/mol), per residue."""
+    return {k: v[-1] for k, v in parse_decomp_terms(csv_file).items()}
 
 
 def label_residue(res_raw):
@@ -208,6 +231,11 @@ def label_residue(res_raw):
         label   = res_raw
     return label, protein
 
+def display_residue(res_raw):
+    """R:A:LEU:967 -> 'LEU967' for figure axis labels."""
+    label, _ = label_residue(res_raw)
+    return label.split(":")[1]
+
 
 # =============================================================================
 # 1. Interface Contacts
@@ -221,13 +249,13 @@ if 1 in RUN:
         for i, (traj, eq) in enumerate(zip(TRAJS, EQUIL)):
             try:
                 u    = mda.Universe(PSF_FILE, traj)
-                myc  = u.select_atoms("segid PROA")
-                max_ = u.select_atoms("segid PROB")
+                myc  = u.select_atoms("segid PROA and not name H*")
+                max_ = u.select_atoms("segid PROB and not name H*")
 
                 contacts = []
                 for ts in u.trajectory:
                     dists      = distance_array(myc.positions, max_.positions)
-                    n_contacts = int((dists < CONTACT_DIST).any(axis=1).sum())
+                    n_contacts = int((dists < CONTACT_DIST).sum())
                     contacts.append(n_contacts)
 
                 time     = frames_to_ns(len(contacts))
@@ -295,6 +323,7 @@ dec_verbose=1,
     mmpbsa_results    = []
     mmpbsa_pb_results = []   # PB cross-validation
     decomp_results    = []
+    decomp_terms      = []   # per replica: {residue: array of DECOMP_TERMS}
 
     for i, (tpr, xtc, topol, eq) in enumerate(zip(TPR_FILES, TRAJS, TOPOL_FILES, EQUIL)):
         print(f"\n  Replica {i+1} (eq {eq}ps) started at {datetime.datetime.now().strftime('%H:%M:%S')}")
@@ -322,26 +351,37 @@ dec_verbose=1,
             "-deo", f"{rep_dir}/DECOMP_RESULTS.csv",
         ]
 
-        print(f"  Command: {' '.join(cmd)}")
-        sys.stdout.flush()
+        reuse = REUSE_EXISTING_MMPBSA and all(
+            os.path.exists(f"{rep_dir}/{name}")
+            for name in ("FINAL_RESULTS_MMPBSA.csv", "DECOMP_RESULTS.csv")
+        )
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=25200,
-                                    env=os.environ.copy())
-            print(f"  Finished at {datetime.datetime.now().strftime('%H:%M:%S')} "
-                  f"(return code {result.returncode})")
+            if reuse:
+                print(f"  ↺ Reusing existing gmx_MMPBSA output in {rep_dir} (no recomputation)")
+                run_stdout = run_stderr = ""
+            else:
+                print(f"  Command: {' '.join(cmd)}")
+                sys.stdout.flush()
 
-            # --- Always dump the full stdout/stderr to disk, win or lose,
-            # so the actual gmx_MMPBSA/mpirun output is available to read
-            # directly instead of relying on truncated console prints.
-            stdout_log = f"{rep_dir}/mmpbsa_stdout.log"
-            stderr_log = f"{rep_dir}/mmpbsa_stderr.log"
-            with open(stdout_log, "w") as f:
-                f.write(result.stdout or "")
-            with open(stderr_log, "w") as f:
-                f.write(result.stderr or "")
-            print(f"  Full logs saved: {stdout_log}")
-            print(f"                   {stderr_log}")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=25200,
+                                        env=os.environ.copy())
+                print(f"  Finished at {datetime.datetime.now().strftime('%H:%M:%S')} "
+                      f"(return code {result.returncode})")
+                run_stdout = result.stdout or ""
+                run_stderr = result.stderr or ""
+
+                # --- Always dump the full stdout/stderr to disk, win or lose,
+                # so the actual gmx_MMPBSA/mpirun output is available to read
+                # directly instead of relying on truncated console prints.
+                stdout_log = f"{rep_dir}/mmpbsa_stdout.log"
+                stderr_log = f"{rep_dir}/mmpbsa_stderr.log"
+                with open(stdout_log, "w") as f:
+                    f.write(run_stdout)
+                with open(stderr_log, "w") as f:
+                    f.write(run_stderr)
+                print(f"  Full logs saved: {stdout_log}")
+                print(f"                   {stderr_log}")
 
             # --- GB binding energy ---
             csv_file = f"{rep_dir}/FINAL_RESULTS_MMPBSA.csv"
@@ -361,19 +401,21 @@ dec_verbose=1,
                         print()
                 else:
                     print(f"  ✗ Replica {i+1} — CSV exists but no Delta data found")
-                    print(f"  --- stdout tail ---\n{(result.stdout or '')[-2000:]}")
-                    print(f"  --- stderr tail ---\n{(result.stderr or '')[-2000:]}")
+                    print(f"  --- stdout tail ---\n{run_stdout[-2000:]}")
+                    print(f"  --- stderr tail ---\n{run_stderr[-2000:]}")
             else:
                 print(f"  ✗ Replica {i+1} — no CSV generated")
-                print(f"  --- stdout tail ---\n{(result.stdout or '')[-2000:]}")
-                print(f"  --- stderr tail ---\n{(result.stderr or '')[-2000:]}")
+                print(f"  --- stdout tail ---\n{run_stdout[-2000:]}")
+                print(f"  --- stderr tail ---\n{run_stderr[-2000:]}")
 
             # --- Per-residue decomposition ---
             decomp_file = f"{rep_dir}/DECOMP_RESULTS.csv"
             if os.path.exists(decomp_file):
-                decomp = parse_decomp_csv(decomp_file)
+                terms  = parse_decomp_terms(decomp_file)
+                decomp = {k: v[-1] for k, v in terms.items()}
                 if decomp:
                     decomp_results.append(decomp)
+                    decomp_terms.append(terms)
                     top = sorted(decomp.items(), key=lambda x: x[1])[:5]
                     print(f"  ✓ Decomp top 5 hotspots: " +
                           ", ".join(f"{label_residue(r)[0]}={v:.2f}" for r, v in top))
@@ -394,9 +436,11 @@ dec_verbose=1,
                     print(f"  ~ Partial results — ΔG (GB): {data.mean():.2f} ± {data.std():.2f} kcal/mol")
             decomp_file = f"{rep_dir}/DECOMP_RESULTS.csv"
             if os.path.exists(decomp_file):
-                decomp = parse_decomp_csv(decomp_file)
+                terms  = parse_decomp_terms(decomp_file)
+                decomp = {k: v[-1] for k, v in terms.items()}
                 if decomp:
                     decomp_results.append(decomp)
+                    decomp_terms.append(terms)
         except Exception as e:
             print(f"  ✗ Replica {i+1} — unexpected error: {e}")
 
@@ -427,7 +471,7 @@ dec_verbose=1,
             continue
 
         sorted_res = sorted(decomp.items(), key=lambda x: x[1])
-        top        = sorted_res[:TOP_N_HOTSPOTS]
+        top        = [(r, v) for r, v in sorted_res if v <= HOTSPOT_THRESHOLD]
         labels     = [r for r, v in top]
         values     = [v for r, v in top]
         colors_bar = []
@@ -435,17 +479,20 @@ dec_verbose=1,
             _, prot = label_residue(lbl)
             colors_bar.append("#e74c3c" if prot == "MYC" else "#3498db" if prot == "MAX" else "#95a5a6")
 
-        fig, ax = plt.subplots(figsize=(12, 6))
+        fig, ax = plt.subplots(figsize=(12, max(6, len(labels) * 0.3)))
         ax.barh(range(len(labels)), values, color=colors_bar, edgecolor="k", linewidth=0.5)
+        ax.axvline(HOTSPOT_THRESHOLD, color="red", linestyle="--", linewidth=1)
         ax.set_yticks(range(len(labels)))
-        ax.set_yticklabels(labels, fontsize=8)
+        ax.set_yticklabels([display_residue(l) for l in labels], fontsize=9)
         ax.axvline(0, color="black", linewidth=0.8)
         ax.set_xlabel("ΔG contribution (kcal/mol)", fontsize=11)
         ax.set_title(f"MM-GBSA Hotspot Residues — Replica {i+1} (eq {EQUIL[i]}ps)\n"
-                     f"Top {TOP_N_HOTSPOTS} by energy contribution",
+                     f"{len(labels)} residues with ΔG ≤ {HOTSPOT_THRESHOLD} kcal/mol",
                      fontsize=12, fontweight="bold")
         ax.legend(handles=[mpatches.Patch(color="#e74c3c", label="MYC (PROA)"),
-                            mpatches.Patch(color="#3498db", label="MAX (PROB)")], fontsize=9)
+                            mpatches.Patch(color="#3498db", label="MAX (PROB)"),
+                            mpatches.Patch(color="red", label=f"Threshold ({HOTSPOT_THRESHOLD} kcal/mol)",
+                                           linestyle="--", fill=False)], fontsize=9)
         ax.grid(axis="x", alpha=0.3)
         plt.tight_layout()
         out_path = f"{OUT}/3.4_hotspots_rep{i+1}.png"
@@ -469,7 +516,7 @@ dec_verbose=1,
 
         if consensus:
             sorted_c = sorted(consensus.items(), key=lambda x: x[1][0])
-            top_c    = sorted_c[:TOP_N_HOTSPOTS]
+            top_c    = [(r, v) for r, v in sorted_c if v[0] <= HOTSPOT_THRESHOLD]
             labels_c = [r for r, _ in top_c]
             means_c  = [v[0] for _, v in top_c]
             stds_c   = [v[1] for _, v in top_c]
@@ -478,17 +525,20 @@ dec_verbose=1,
                 _, prot = label_residue(lbl)
                 colors_c.append("#e74c3c" if prot == "MYC" else "#3498db" if prot == "MAX" else "#95a5a6")
 
-            fig, ax = plt.subplots(figsize=(12, 6))
+            fig, ax = plt.subplots(figsize=(12, max(6, len(labels_c) * 0.3)))
             ax.barh(range(len(labels_c)), means_c, xerr=stds_c,
                     color=colors_c, edgecolor="k", linewidth=0.5,
                     error_kw={"elinewidth": 1.2, "capsize": 3})
+            ax.axvline(HOTSPOT_THRESHOLD, color="red", linestyle="--", linewidth=1)
             ax.set_yticks(range(len(labels_c)))
-            ax.set_yticklabels(labels_c, fontsize=8)
+            ax.set_yticklabels([display_residue(l) for l in labels_c], fontsize=9)
             ax.axvline(0, color="black", linewidth=0.8)
             ax.set_xlabel("Mean ΔG contribution (kcal/mol)", fontsize=11)
             # Title removed per request.
             ax.legend(handles=[mpatches.Patch(color="#e74c3c", label="MYC (PROA)"),
-                                mpatches.Patch(color="#3498db", label="MAX (PROB)")], fontsize=9)
+                                mpatches.Patch(color="#3498db", label="MAX (PROB)"),
+                                mpatches.Patch(color="red", label=f"Threshold ({HOTSPOT_THRESHOLD} kcal/mol)",
+                                               linestyle="--", fill=False)], fontsize=9)
             ax.grid(axis="x", alpha=0.3)
             plt.tight_layout()
             plt.savefig(f"{OUT}/3.5_hotspots_consensus.png", dpi=150)
@@ -498,12 +548,13 @@ dec_verbose=1,
             summary_path = f"{OUT}/3.0_hotspots_summary.txt"
             with open(summary_path, "w") as f:
                 f.write("Consensus MM-GBSA Hotspot Residues — MYC-MAX\n")
-                f.write(f"Replicas: {len(decomp_results)} | Top {TOP_N_HOTSPOTS} by mean contribution\n")
+                f.write(f"Replicas: {len(decomp_results)} | {len(top_c)} residues with mean "
+                        f"ΔG <= {HOTSPOT_THRESHOLD} kcal/mol (of {len(sorted_c)} present in all replicas)\n")
                 f.write(f"Settings: igb=2, idecomp=1, interval=50\n")
                 f.write("="*60 + "\n")
                 f.write(f"{'Residue':<25} {'Mean (kcal/mol)':>18} {'Std':>10} {'Protein':>10}\n")
                 f.write("-"*60 + "\n")
-                for res, (mean_v, std_v) in sorted_c[:TOP_N_HOTSPOTS]:
+                for res, (mean_v, std_v) in top_c:
                     _, prot = label_residue(res)
                     f.write(f"{res:<25} {mean_v:>18.2f} {std_v:>10.2f} {prot:>10}\n")
             print(f"  → Saved {summary_path}")
@@ -520,6 +571,54 @@ dec_verbose=1,
                         _, prot = label_residue(res)
                         f.write(f"{chain},{resnum},{resname},{mean_v:.4f},{std_v:.4f},{prot}\n")
             print(f"  → Saved {csv_hotspot_path} (machine-readable)")
+
+            # --- EXPORT FULL PER-RESIDUE DECOMPOSITION (all energy terms) ---
+            # One row per consensus residue, with the per-replica TOTAL, the
+            # mean/SD across replicas and each energy term averaged over
+            # replicas. This file is the source for the Supporting Information
+            # table and for the per-term aggregates reported below.
+            if len(decomp_terms) == len(decomp_results):
+                csv_decomp_path = f"{OUT}/mmpbsa_decomposition.csv"
+                n_rep = len(decomp_terms)
+                term_cols = ["vdW", "Electrostatic", "Polar", "NonPolar"]
+                with open(csv_decomp_path, "w") as f:
+                    f.write("Rank,Chain,Number,Residue,Protein," +
+                            ",".join(f"Rep{i+1}_Total" for i in range(n_rep)) +
+                            ",Total_Mean,Total_Std," + ",".join(term_cols) + "\n")
+                    for rank, (res, (mean_v, std_v)) in enumerate(sorted_c, 1):
+                        parts = res.split(":")
+                        if len(parts) != 4:
+                            continue
+                        _, chain, resname, resnum = parts
+                        _, prot = label_residue(res)
+                        per_rep = [d[res] for d in decomp_terms]
+                        # DECOMP_TERMS = Internal, vdW, Electrostatic, Polar, NonPolar, TOTAL
+                        tmean = np.mean(per_rep, axis=0)
+                        f.write(f"{rank},{chain},{resnum},{resname},{prot}," +
+                                ",".join(f"{r[-1]:.4f}" for r in per_rep) +
+                                f",{mean_v:.4f},{std_v:.4f}," +
+                                ",".join(f"{tmean[j]:.4f}" for j in (1, 2, 3, 4)) + "\n")
+                print(f"  → Saved {csv_decomp_path} (per-residue energy terms)")
+
+                # --- Per-term aggregates, appended to the hotspot summary ---
+                sums = {}
+                for label, subset in (
+                    (f"Hotspots (<= {HOTSPOT_THRESHOLD})", [r for r, v in sorted_c if v[0] <= HOTSPOT_THRESHOLD]),
+                    ("All consensus residues", [r for r, _ in sorted_c]),
+                ):
+                    arr = np.array([np.mean([d[r] for d in decomp_terms], axis=0) for r in subset])
+                    sums[label] = (len(subset), arr.sum(axis=0))
+                with open(summary_path, "a") as f:
+                    f.write("\n" + "="*72 + "\n")
+                    f.write("Energy term decomposition (kcal/mol, summed over residues,\n")
+                    f.write("each residue averaged over frames and then over replicas)\n")
+                    f.write("-"*72 + "\n")
+                    f.write(f"{'Group':<28}{'n':>5}{'vdW':>9}{'Elec':>9}{'Polar':>9}"
+                            f"{'NonPol':>9}{'TOTAL':>9}\n")
+                    for label, (n, v) in sums.items():
+                        f.write(f"{label:<28}{n:>5}{v[1]:>9.1f}{v[2]:>9.1f}{v[3]:>9.1f}"
+                                f"{v[4]:>9.1f}{v[5]:>9.1f}\n")
+                print(f"  → Appended energy-term aggregates to {summary_path}")
         else:
             print("  ✗ No residues found consistently across all replicas for consensus plot")
 
@@ -686,15 +785,10 @@ if 3 in RUN:
         labels_b  = [k for k, _ in sorted_b]
         means_b   = [np.mean(v["occupancies"]) for _, v in sorted_b]
         stds_b    = [np.std(v["occupancies"])  for _, v in sorted_b]
-        # Colour by direction: MYC→MAX = orange, MAX→MYC = purple
-        bar_colors = [
-            "#e67e22" if v["direction"] == "MYC→MAX" else "#3498db"
-            for _, v in sorted_b
-        ]
 
         fig, ax = plt.subplots(figsize=(11, max(4, len(labels_b) * 0.55)))
         ax.barh(range(len(labels_b)), means_b, xerr=stds_b,
-                color=bar_colors, edgecolor="k", linewidth=0.5, alpha=alpha,
+                color="#3498db", edgecolor="k", linewidth=0.5, alpha=alpha,
                 error_kw={"elinewidth": 1.2, "capsize": 3})
         ax.set_yticks(range(len(labels_b)))
         ax.set_yticklabels(labels_b, fontsize=9)
@@ -705,9 +799,7 @@ if 3 in RUN:
         if title:
             ax.set_title(title, fontsize=12, fontweight="bold")
         ax.legend(handles=[
-            mpatches.Patch(color="#e67e22", label="MYC(+) → MAX(-)"),
-            mpatches.Patch(color="#3498db", label="MAX(+) → MYC(-)"),
-            mpatches.Patch(color="red",     label=f"Threshold ({SALT_OCCUPANCY*100:.0f}%)",
+            mpatches.Patch(color="red", label=f"Threshold ({SALT_OCCUPANCY*100:.0f}%)",
                            linestyle="--", fill=False),
         ], fontsize=9)
         ax.grid(axis="x", alpha=0.3)

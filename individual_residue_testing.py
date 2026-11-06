@@ -16,7 +16,7 @@ import MDAnalysis as mda
 
 # ============================== CONFIG ===================================
 STRUCTURE_PDB = "MYC-MAX/MYC-MAX-500/charmm-gui/gromacs/crystal_proteins.pdb"  # topology (atom names/order)
-TRAJECTORY = "MYC-MAX/traj_all_fit_v2.xtc"                                     # the real, aligned, pooled trajectory
+TRAJECTORY = "MYC-MAX/traj_all_fit_v3.xtc"                                     # the real, aligned, pooled trajectory
 POCKET_GRID_PDB = "Results/Pockets/pocket_definitions/SP2_pocket_grid.pdb" # modify depending on the pocket you want to check
 
 CHAIN, RESNUM = "A", 914

@@ -1,0 +1,17 @@
+open /home/marcel/Github/myc-max-candidate-pockets/crystal_proteins.pdb
+set bgColor white
+color /A #ed8282
+color /B #99c1f1
+
+# --- Cross-validated (score >= 2) residues, in red ---
+name flagged /A:917,940,970 | /B:218,254,256
+show flagged atoms
+style flagged stick
+color flagged red
+# labels skipped (SHOW_LABELS = False) - add them manually in an
+# image editor afterward, using cross_validation_unified.csv as
+# the reference for which residue is which.
+
+view
+# rotate to the figure orientation, then:
+# save /home/marcel/Github/myc-max-candidate-pockets/Results/Pockets/final_residues.png width 3000 height 2400 supersample 3 transparentBackground false
