@@ -1,0 +1,24 @@
+{
+  "upload_type": "software",
+  "title": "MYC-MAX MD Analysis Pipeline: scripts for the identification of candidate pockets at the MYC-MAX interface",
+  "description": "<p>All Python scripts used for analyzing the molecular dynamics (MD) simulations of the c-MYC:MAX complex and its individual components, together with the workflow employed in the study <em>Identification of Candidate Pockets at the MYC-MAX Interface for Protein-Protein Interaction Disruption</em>.</p><p>The pipeline covers: conformational analysis of isolated c-MYC (RMSD, RMSF, Rg); comparison of isolated vs. MAX-bound c-MYC; interface contacts, MM-GBSA per-residue energy decomposition and persistent salt bridges of the complex; trajectory-based pocket detection with MDpocket and physicochemical characterization of the sub-pockets; and a triple-method consensus of interface hotspots. Generated results (figures, tables and ChimeraX scripts) are included in the Results/ directory. Raw MD trajectories are not included due to their size (&gt;50 GB).</p>",
+  "creators": [
+    {
+      "name": "Rochera, Marcel",
+      "affiliation": "Universitat Politècnica de Catalunya (UPC)"
+    }
+  ],
+  "license": "MIT",
+  "access_right": "open",
+  "keywords": [
+    "molecular dynamics",
+    "c-MYC",
+    "MAX",
+    "protein-protein interaction",
+    "pocket detection",
+    "MDpocket",
+    "MM-GBSA",
+    "MDAnalysis",
+    "GROMACS"
+  ]
+}
