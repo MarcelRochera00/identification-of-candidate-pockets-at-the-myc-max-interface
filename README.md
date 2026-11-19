@@ -1,4 +1,5 @@
 # MYC-MAX MD Analysis Pipeline
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24377743.svg)](https://doi.org/10.5281/zenodo.24377743)
 
 This repository contains the Python scripts used for analyzing Molecular Dynamics simulations of the MYC-MAX complex and isolated c-MYC. The analysis pipeline directly mirrors the methodology and results discussed in the associated paper: *Identification of Candidate Pockets at the MYC-MAX Interface for Protein-Protein Interaction Disruption*.
 
@@ -76,7 +77,7 @@ Due to the significant size of Molecular Dynamics trajectories (individual `.xtc
 3. Run the scripts from the repository root, since the paths are relative to it.
 
 ## Citation
-If you use these scripts, please cite the archived release on Zenodo: DOI_PLACEHOLDER
+If you use these scripts, please cite the archived release on Zenodo: [10.5281/zenodo.24377743](https://doi.org/10.5281/zenodo.24377743)
 
 ## License
 The code in this repository is released under the [MIT License](LICENSE).
